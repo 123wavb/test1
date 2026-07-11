@@ -8,6 +8,7 @@ import java.util.*;
  * 自动执行：检测变更 → 生成提交信息 → 暂存 → 提交 → 推送到远程
  * <p>
  * 适配 Windows 系统，通过 cmd.exe /c 执行 Git 命令。
+ * test1
  */
 public class GitPushSkill {
 
@@ -58,7 +59,7 @@ public class GitPushSkill {
         if (success) {
             System.out.println(GREEN + "\n✅ 推送成功完成！" + RESET);
         } else {
-            System.err.println(RED + "\n❌ 推送过程中出现错误，已终止。" + RESET);
+            System.err.println(RED + "\n❌ 推送过程中出现了错误，已终止。" + RESET);
             System.exit(1);
         }
     }
