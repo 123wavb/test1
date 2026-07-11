@@ -673,6 +673,20 @@ public class GitPushSkill {
     // ============================
 
     /**
+     * 需要继承到子进程的代理环境变量名称列表
+     * <p>
+     * Git 依赖 libcurl 进行网络操作，当位于代理网络环境（如公司内网）时，
+     * 必须设置 HTTP_PROXY / HTTPS_PROXY 等环境变量才能正常访问远程仓库。
+     * 该列表同时包含大写和小写两种形式，以兼容不同操作系统和工具链。
+     */
+    private static final String[] PROXY_ENV_VARS = {
+            "HTTP_PROXY", "http_proxy",
+            "HTTPS_PROXY", "https_proxy",
+            "ALL_PROXY", "all_proxy",
+            "NO_PROXY", "no_proxy"
+    };
+
+    /**
      * 通用命令执行方法，自动适配 Windows / Linux / macOS
      * <p>
      * 执行流程：
@@ -680,9 +694,12 @@ public class GitPushSkill {
      *      - Windows → cmd.exe /c <命令>
      *      - Linux/macOS → sh -c <命令>
      *   2. 通过 ProcessBuilder 启动进程
-     *   3. 读取进程的标准输出和错误输出
-     *   4. 等待进程执行完毕
-     *   5. 检查退出码，成功返回输出内容，失败返回 null
+     *   3. 【关键】从当前 JVM 进程的 System.getenv() 中继承代理环境变量
+     *      （HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY 的大小写形式）
+     *      并显式设置到子进程的环境变量中，确保 Git 能通过代理访问 GitHub
+     *   4. 读取进程的标准输出和错误输出
+     *   5. 等待进程执行完毕
+     *   6. 检查退出码，成功返回输出内容，失败返回 null
      * <p>
      * Windows 路径说明：
      *   - 路径中的反斜杠 \ 在 cmd.exe 中正常使用
@@ -719,6 +736,33 @@ public class GitPushSkill {
 
             // 合并标准输出和错误输出，方便统一读取
             pb.redirectErrorStream(true);
+
+            // ---- ★ 关键修复：继承终端代理环境变量 ----
+            // ProcessBuilder 默认会继承父进程的环境，但在某些 Windows 环境下，
+            // 通过 IDEA / VS Code 等 IDE 运行 Java 时，终端中通过 set HTTP_PROXY=...
+            // 设置的代理变量不会自动传递到 JVM 的子进程。
+            // 这里显式从 System.getenv() 读取并设置到 ProcessBuilder 中，确保 Git 命令能通过代理联网。
+            Map<String, String> env = pb.environment();
+            Map<String, String> systemEnv = System.getenv();
+            boolean anyProxySet = false;
+
+            for (String varName : PROXY_ENV_VARS) {
+                String value = systemEnv.get(varName);
+                if (value != null && !value.isEmpty()) {
+                    env.put(varName, value);
+                    anyProxySet = true;
+                }
+            }
+
+            // 仅在非 git status 命令时输出代理继承信息，避免 git status 的输出过于冗长
+            if (!command.contains("status --porcelain") && anyProxySet) {
+                String httpsProxy = env.get("HTTPS_PROXY");
+                if (httpsProxy == null) {
+                    httpsProxy = env.get("https_proxy");
+                }
+                System.out.println("  [代理] 已继承代理环境变量"
+                        + (httpsProxy != null ? " (HTTPS_PROXY=" + maskProxyUrl(httpsProxy) + ")" : ""));
+            }
 
             // ---- 3. 启动进程 ----
             Process process = pb.start();
@@ -788,6 +832,30 @@ public class GitPushSkill {
     }
 
     // ============================
+    //  代理工具方法
+    // ============================
+
+    /**
+     * 对代理 URL 进行脱敏处理，隐藏密码信息
+     * <p>
+     * 例如：http://user:password@proxy.example.com:8080
+     *  →  http://user:****@proxy.example.com:8080
+     * <p>
+     * 用于在控制台输出代理信息时防止敏感信息泄露。
+     *
+     * @param proxyUrl 原始代理 URL
+     * @return 脱敏后的代理 URL，如果为 null 则返回空字符串
+     */
+    private String maskProxyUrl(String proxyUrl) {
+        if (proxyUrl == null || proxyUrl.isEmpty()) {
+            return "";
+        }
+        // 匹配 http://user:password@host 或 https://user:password@host 格式
+        // 将密码部分替换为 ****
+        return proxyUrl.replaceAll("://([^:]+):([^@]+)@", "://$1:****@");
+    }
+
+    // ============================
     //  测试入口（可选）
     // ============================
 
@@ -818,6 +886,23 @@ public class GitPushSkill {
             System.out.println(GREEN + "  ✅ " + version.trim() + RESET);
         } else {
             System.err.println(RED + "  ❌ Git 不可用，请确保 Git 已安装并添加到 PATH 环境变量" + RESET);
+        }
+
+        // ---- 检测代理环境变量 ----
+        System.out.println();
+        System.out.println(YELLOW + "正在检测代理环境变量 ..." + RESET);
+        Map<String, String> sysEnv = System.getenv();
+        boolean foundProxy = false;
+        for (String proxyVar : new String[]{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"}) {
+            String val = sysEnv.get(proxyVar);
+            if (val != null && !val.isEmpty()) {
+                System.out.println(GREEN + "  ✅ " + proxyVar + " = " + skill.maskProxyUrl(val) + RESET);
+                foundProxy = true;
+            }
+        }
+        if (!foundProxy) {
+            System.out.println(YELLOW + "  ⚠ 未检测到代理环境变量。如果您在代理网络环境中，请设置 HTTP_PROXY 环境变量。" + RESET);
+            System.out.println(YELLOW + "     例如：set HTTPS_PROXY=http://127.0.0.1:7890" + RESET);
         }
     }
 }
