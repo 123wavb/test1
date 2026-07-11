@@ -36,6 +36,14 @@ public class GitPushSkill {
      * @param args 可选参数：--projectPath=<路径>
      */
     public static void main(String[] args) {
+        // ---- 检测是否运行测试模式 ----
+        for (String arg : args) {
+            if (arg.equals("--test")) {
+                testEnvironment(args);
+                return;
+            }
+        }
+
         // ---- 解析参数 ----
         String projectPath = System.getProperty("user.dir"); // 默认当前工作目录
 
