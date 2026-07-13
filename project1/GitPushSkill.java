@@ -5,7 +5,7 @@ import java.util.*;
 /**
  * GitPushSkill — 一键上传代码到 GitHub 的技能类
  * <p>
- * 自动执行：检测变更 → 生成提交信息 → 暂存 → 提交 → 推送到远程
+ * 执行流程：检测变更 → 暂存 → 等待用户输入提交备注 → 提交 → 推送到远程
  * <p>
  * 适配 Windows 系统，通过 cmd.exe /c 执行 Git 命令。
  * test1
@@ -79,7 +79,7 @@ public class GitPushSkill {
     /**
      * 核心流程编排方法
      * <p>
-     * 按顺序执行五个步骤，任一步骤失败则终止并返回 false。
+     * 按顺序执行六个步骤，任一步骤失败则终止并返回 false。
      *
      * @param projectPath 项目根目录的绝对路径
      * @return true 表示全部执行成功，false 表示中途失败
@@ -91,7 +91,7 @@ public class GitPushSkill {
         System.out.println(CYAN + "========================================\n" + RESET);
 
         // ---- 步骤1：检测变更 ----
-        System.out.println(YELLOW + "[步骤 1/5] 检测项目变更 ..." + RESET);
+        System.out.println(YELLOW + "[步骤 1/6] 检测项目变更 ..." + RESET);
         List<String> changedFiles = getChangedFiles(projectPath);
         if (changedFiles == null) {
             System.err.println(RED + "[错误] 检测变更失败，终止执行。" + RESET);
@@ -107,35 +107,37 @@ public class GitPushSkill {
         }
         System.out.println();
 
-        // ---- 步骤2：生成提交信息 ----
-        System.out.println(YELLOW + "[步骤 2/5] 生成提交信息 ..." + RESET);
-        String commitMessage = generateCommitMessage(changedFiles);
-        if (commitMessage == null) {
-            System.err.println(RED + "[错误] 生成提交信息失败，终止执行。" + RESET);
-            return false;
-        }
-        System.out.println("  生成的提交信息：\n");
-        System.out.println("    " + commitMessage.replace("\n", "\n    "));
-        System.out.println();
+        // ---- 步骤2：展示变更文件列表（已在步骤1中一并输出） ----
+        // 此处直接沿用步骤1的输出结果，无需重复操作
 
         // ---- 步骤3：暂存变更 ----
-        System.out.println(YELLOW + "[步骤 3/5] 暂存变更 (git add) ..." + RESET);
+        System.out.println(YELLOW + "[步骤 3/6] 暂存变更 (git add) ..." + RESET);
         if (!stageChanges(projectPath)) {
             System.err.println(RED + "[错误] 暂存变更失败，终止执行。" + RESET);
             return false;
         }
         System.out.println("  ✅ 文件已暂存\n");
 
-        // ---- 步骤4：提交变更 ----
-        System.out.println(YELLOW + "[步骤 4/5] 提交变更 (git commit) ..." + RESET);
+        // ---- 步骤4：等待用户输入 commit message ----
+        System.out.println(YELLOW + "[步骤 4/6] 请输入提交备注 ..." + RESET);
+        String commitMessage = readCommitMessageFromUser();
+        if (commitMessage == null) {
+            // 用户输入读取失败（如 IO 异常）
+            System.err.println(RED + "[错误] 读取提交信息失败，终止执行。" + RESET);
+            return false;
+        }
+        System.out.println("  您输入的提交信息：" + commitMessage + "\n");
+
+        // ---- 步骤5：提交变更 ----
+        System.out.println(YELLOW + "[步骤 5/6] 提交变更 (git commit) ..." + RESET);
         if (!commitChanges(projectPath, commitMessage)) {
             System.err.println(RED + "[错误] 提交变更失败，终止执行。" + RESET);
             return false;
         }
         System.out.println("  ✅ 已提交\n");
 
-        // ---- 步骤5：推送到远程（含安全确认） ----
-        System.out.println(YELLOW + "[步骤 5/5] 推送到远程仓库 (git push) ..." + RESET);
+        // ---- 步骤6：推送到远程（含安全确认） ----
+        System.out.println(YELLOW + "[步骤 6/6] 推送到远程仓库 (git push) ..." + RESET);
 
         // 推送前输出摘要供用户确认
         printPushSummary(projectPath, changedFiles, commitMessage);
@@ -222,253 +224,55 @@ public class GitPushSkill {
     }
 
     // ============================
-    //  步骤2：生成提交信息
+    //  步骤4：等待用户输入提交备注
     // ============================
 
     /**
-     * 根据变更文件列表自动生成规范的 Git 提交信息
+     * 从控制台读取用户手动输入的 commit message
      * <p>
-     * 生成策略：
-     *   1. 根据文件类型和路径推断变更类型（feat/fix/docs/refactor/chore 等）
-     *   2. 使用最常见的变更类型作为标题前缀
-     *   3. 主体部分逐行列出变更文件及简要说明
+     * 执行流程：
+     *   1. 在控制台输出提示信息，引导用户输入提交备注
+     *   2. 使用 BufferedReader 读取用户从键盘输入的一整行文字
+     *   3. 如果用户直接按回车（输入为空），给出警告并提示重新输入
+     *   4. 循环直到用户输入非空内容为止
      * <p>
-     * 提交信息格式（符合 Git 规范）：
-     *   <type>: <简短标题>
-     *   <空行>
-     *   - <文件路径>: <说明>
-     *   - <文件路径>: <说明>
+     * 该环节在 git add 之后、git commit 之前执行，
+     * 让用户有机会在暂存完所有变更后，根据实际变更内容撰写提交信息。
      *
-     * @param changedFiles 变更文件路径列表
-     * @return 格式化后的提交信息字符串
+     * @return 用户输入的非空提交信息字符串，读取失败返回 null
      */
-    public String generateCommitMessage(List<String> changedFiles) {
-        try {
-            if (changedFiles == null || changedFiles.isEmpty()) {
-                return "chore: 无变更";
-            }
+    public String readCommitMessageFromUser() {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        String input = null;
 
-            // ---- 1. 根据变更文件推断提交类型 ----
-            String type = inferChangeType(changedFiles);
+        while (true) {
+            try {
+                System.out.print("  请为本次提交输入 commit message（输入完成后按回车确认）：");
 
-            // ---- 2. 生成概括性标题 ----
-            String title = generateTitle(type, changedFiles);
+                input = reader.readLine();
 
-            // ---- 3. 生成本体：逐行列出变更文件 ----
-            StringBuilder body = new StringBuilder();
-            for (String filePath : changedFiles) {
-                String description = describeChange(filePath);
-                body.append("- ").append(filePath);
-                if (description != null && !description.isEmpty()) {
-                    body.append(": ").append(description);
+                // 检查是否读取到 EOF（用户可能按了 Ctrl+Z 或 Ctrl+D）
+                if (input == null) {
+                    System.err.println(RED + "\n  [警告] 读取到输入流结束，终止提交。" + RESET);
+                    return null;
                 }
-                body.append("\n");
-            }
 
-            // ---- 4. 组合标题 + 空行 + 本体 ----
-            return title + "\n\n" + body.toString().trim();
-
-        } catch (Exception e) {
-            System.err.println(RED + "[异常] 生成提交信息时发生异常：" + e.getMessage() + RESET);
-            return null;
-        }
-    }
-
-    /**
-     * 根据变更文件路径判断本次提交的类型
-     * <p>
-     * 规则参考 Conventional Commits 规范：
-     *   feat    → 新增功能（新文件或 src/main 下的新增）
-     *   fix     → 修复 bug
-     *   docs    → 文档变更（.md / .txt / docs/ 目录）
-     *   refactor→ 重构（仅修改已有文件）
-     *   style   → 样式 / 格式变更（.css / .less / .scss）
-     *   test    → 测试相关（test/ 目录）
-     *   chore   → 杂项（构建、配置等）
-     *
-     * @param files 变更文件路径列表
-     * @return 推断出的变更类型（feat / fix / docs / ...）
-     */
-    private String inferChangeType(List<String> files) {
-        boolean hasNewFiles = false;
-        boolean hasModifiedFiles = false;
-        boolean hasDocFiles = false;
-        boolean hasTestFiles = false;
-        boolean hasConfigFiles = false;
-
-        for (String file : files) {
-            String lowerFile = file.toLowerCase();
-
-            if (lowerFile.startsWith("docs/") || lowerFile.endsWith(".md")) {
-                hasDocFiles = true;
-            } else if (lowerFile.startsWith("test/") || lowerFile.startsWith("tests/")
-                    || lowerFile.contains("/test/") || lowerFile.startsWith("src/test/")) {
-                hasTestFiles = true;
-            } else if (lowerFile.endsWith(".xml") || lowerFile.endsWith(".yml")
-                    || lowerFile.endsWith(".yaml") || lowerFile.endsWith(".properties")
-                    || lowerFile.endsWith(".json") || lowerFile.contains("pom.")
-                    || lowerFile.contains("build.gradle") || lowerFile.contains("settings.")) {
-                hasConfigFiles = true;
-            } else {
-                // 区分新增还是修改 —— 这里由于只用了一条 git status --porcelain
-                // 没有区分 XY 状态，简单逻辑：路径中包含 "new" 视为新增
-                if (file.contains("new")) {
-                    hasNewFiles = true;
-                } else {
-                    hasModifiedFiles = true;
+                // 去除首尾空白后检查是否为空
+                String trimmed = input.trim();
+                if (trimmed.isEmpty()) {
+                    System.out.println(RED + "  ❌ 提交信息不能为空，请重新输入：" + RESET);
+                    // 继续循环，让用户重新输入
+                    continue;
                 }
+
+                // 输入有效，返回去除首尾空白后的内容
+                return trimmed;
+
+            } catch (IOException e) {
+                System.err.println(RED + "\n  [异常] 读取用户输入时发生 IO 错误：" + e.getMessage() + RESET);
+                return null;
             }
         }
-
-        // 按优先级返回类型
-        if (hasNewFiles) return "feat";
-        if (hasModifiedFiles && !hasDocFiles && !hasTestFiles) return "fix";
-        if (hasDocFiles && !hasModifiedFiles && !hasNewFiles) return "docs";
-        if (hasTestFiles) return "test";
-        if (hasConfigFiles) return "chore";
-
-        return "feat"; // 默认类型
-    }
-
-    /**
-     * 根据类型和变更文件列表生成提交信息的标题行
-     *
-     * @param type  推断的变更类型
-     * @param files 变更文件列表
-     * @return 格式化的标题行，如 "feat: 新增用户登录模块"
-     */
-    private String generateTitle(String type, List<String> files) {
-        // 从文件路径中提取公共前缀作为标题的灵感
-        // 例如：src/main/java/com/example/ → 提取 com/example
-        String commonPrefix = findCommonPrefix(files);
-
-        // 根据类型生成不同的标题模板
-        switch (type) {
-            case "feat":
-                if (!commonPrefix.isEmpty() && !commonPrefix.equals(".")) {
-                    return "feat: 新增 " + commonPrefix + " 相关功能";
-                }
-                return "feat: 新增功能模块";
-            case "fix":
-                if (!commonPrefix.isEmpty() && !commonPrefix.equals(".")) {
-                    return "fix: 修复 " + commonPrefix + " 相关问题";
-                }
-                return "fix: 修复程序异常";
-            case "docs":
-                return "docs: 更新项目文档";
-            case "test":
-                return "test: 新增或更新测试用例";
-            case "refactor":
-                return "refactor: 重构代码结构";
-            case "style":
-                return "style: 调整代码格式与样式";
-            case "chore":
-                return "chore: 更新项目配置";
-            default:
-                return "feat: 提交更新";
-        }
-    }
-
-    /**
-     * 查找多个文件路径的最长公共前缀
-     * 用于生成更有意义的提交标题
-     *
-     * @param files 文件路径列表
-     * @return 公共前缀字符串
-     */
-    private String findCommonPrefix(List<String> files) {
-        if (files == null || files.isEmpty()) return "";
-        if (files.size() == 1) {
-            // 单个文件时，取文件所在目录
-            Path p = Paths.get(files.get(0));
-            return p.getParent() != null ? p.getParent().toString().replace("\\", "/") : "";
-        }
-
-        // 取第一个文件路径作为基准
-        String[] parts = files.get(0).replace("\\", "/").split("/");
-        String common = files.get(0);
-
-        for (int i = 1; i < files.size(); i++) {
-            String current = files.get(i).replace("\\", "/");
-            // 逐字符比较，找到公共前缀
-            int minLen = Math.min(common.length(), current.length());
-            int j = 0;
-            while (j < minLen && common.charAt(j) == current.charAt(j)) {
-                j++;
-            }
-            common = common.substring(0, j);
-        }
-
-        // 取最后一个 / 之前的部分作为公共目录前缀
-        int lastSlash = common.lastIndexOf('/');
-        if (lastSlash > 0) {
-            return common.substring(0, lastSlash);
-        }
-
-        return common;
-    }
-
-    /**
-     * 根据文件路径生成对该变更的简要说明
-     * <p>
-     * 通过文件后缀名推断变更内容：
-     *   .java / .kt / .py → "更新业务逻辑"
-     *   .html / .jsp      → "更新页面模板"
-     *   .css / .less      → "调整页面样式"
-     *   .js / .ts         → "更新前端逻辑"
-     *   .sql              → "更新数据库脚本"
-     *   .xml / .yml       → "更新配置文件"
-     *   .md               → "更新文档说明"
-     *
-     * @param filePath 文件路径
-     * @return 变更说明文本
-     */
-    private String describeChange(String filePath) {
-        String lowerPath = filePath.toLowerCase();
-
-        // Java / Kotlin 源文件
-        if (lowerPath.endsWith(".java") || lowerPath.endsWith(".kt")) {
-            String fileName = Paths.get(filePath).getFileName().toString();
-            return "更新逻辑：" + fileName;
-        }
-        // 前端页面文件
-        if (lowerPath.endsWith(".html") || lowerPath.endsWith(".jsp")
-                || lowerPath.endsWith(".ftl") || lowerPath.endsWith(".thymeleaf")) {
-            return "更新页面模板";
-        }
-        // 样式文件
-        if (lowerPath.endsWith(".css") || lowerPath.endsWith(".less")
-                || lowerPath.endsWith(".scss") || lowerPath.endsWith(".sass")) {
-            return "调整页面样式";
-        }
-        // JavaScript / TypeScript
-        if (lowerPath.endsWith(".js") || lowerPath.endsWith(".ts")
-                || lowerPath.endsWith(".jsx") || lowerPath.endsWith(".tsx")) {
-            return "更新前端逻辑";
-        }
-        // SQL 脚本
-        if (lowerPath.endsWith(".sql")) {
-            return "更新数据库脚本";
-        }
-        // 配置文件
-        if (lowerPath.endsWith(".xml") || lowerPath.endsWith(".yml")
-                || lowerPath.endsWith(".yaml") || lowerPath.endsWith(".properties")
-                || lowerPath.endsWith(".json")) {
-            return "更新配置文件";
-        }
-        // Markdown 文档
-        if (lowerPath.endsWith(".md") || lowerPath.endsWith(".txt")
-                || lowerPath.endsWith(".rst")) {
-            return "更新文档说明";
-        }
-        // 图片资源
-        if (lowerPath.endsWith(".png") || lowerPath.endsWith(".jpg")
-                || lowerPath.endsWith(".jpeg") || lowerPath.endsWith(".svg")
-                || lowerPath.endsWith(".ico")) {
-            return "更新资源文件";
-        }
-        // 默认
-        return "更新文件";
     }
 
     // ============================
@@ -506,7 +310,7 @@ public class GitPushSkill {
     }
 
     // ============================
-    //  步骤4：提交变更
+    //  步骤5：提交变更
     // ============================
 
     /**
@@ -560,7 +364,7 @@ public class GitPushSkill {
     }
 
     // ============================
-    //  步骤5：推送到远程
+    //  步骤6：推送到远程
     // ============================
 
     /**
