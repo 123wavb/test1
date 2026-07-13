@@ -1,25 +1,30 @@
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
 /**
  * GitPushSkill — 一键上传代码到 GitHub 的技能类
  * <p>
- * 执行流程：检测变更 → 暂存 → 等待用户输入提交备注 → 提交 → 推送到远程
+ * 执行流程：检测变更 → 暂存 → 提交（使用命令行参数传入的 commit message）→ 推送到远程
+ * <p>
+ * 调用方式：
+ *   java GitPushSkill --projectPath="D:\项目" --message="feat: 新增登录模块"
+ *   java GitPushSkill --projectPath="D:\项目" -m "fix: 修复首页异常"
  * <p>
  * 适配 Windows 系统，通过 cmd.exe /c 执行 Git 命令。
- * test1
+ * 提交信息使用 UTF-8 编码写入临时文件，配合 git -c i18n.commitEncoding=UTF-8 确保 GitHub 上的中文不出现乱码。
  */
 public class GitPushSkill {
 
     // ============================
     //  配色 / 进度输出辅助
     // ============================
-    private static final String GREEN  = "\u001B[32m";
-    private static final String YELLOW = "\u001B[33m";
-    private static final String RED    = "\u001B[31m";
-    private static final String CYAN   = "\u001B[36m";
-    private static final String RESET  = "\u001B[0m";
+    private static final String GREEN  = "[32m";
+    private static final String YELLOW = "[33m";
+    private static final String RED    = "[31m";
+    private static final String CYAN   = "[36m";
+    private static final String RESET  = "[0m";
 
     // ============================
     //  入口方法
@@ -28,12 +33,16 @@ public class GitPushSkill {
     /**
      * 程序入口
      * <p>
-     * 执行步骤：
-     * 1. 解析命令行参数，获取 projectPath（默认当前目录）
-     * 2. 验证路径是否存在
-     * 3. 调用 executeSkill() 执行完整流程
+     * 解析命令行参数，支持的参数：
+     *   --projectPath=<路径>   目标项目根目录（默认当前工作目录）
+     *   --message=<提交信息>   提交信息（必填，也可用 -m= 或 -m <值>）
+     *   --test                运行环境检测模式
+     * <p>
+     * 示例：
+     *   java GitPushSkill --projectPath="D:\MyProject" --message="feat: 新增登录功能"
+     *   java GitPushSkill -m "fix: 修复首页异常"
      *
-     * @param args 可选参数：--projectPath=<路径>
+     * @param args 命令行参数
      */
     public static void main(String[] args) {
         // ---- 检测是否运行测试模式 ----
@@ -46,11 +55,37 @@ public class GitPushSkill {
 
         // ---- 解析参数 ----
         String projectPath = System.getProperty("user.dir"); // 默认当前工作目录
+        String commitMessage = null;
 
-        for (String arg : args) {
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
+
+            // 解析 --projectPath=<路径>
             if (arg.startsWith("--projectPath=")) {
                 projectPath = arg.substring("--projectPath=".length());
             }
+            // 解析 --message=<提交信息>
+            else if (arg.startsWith("--message=")) {
+                commitMessage = arg.substring("--message=".length());
+            }
+            // 解析 -m=<提交信息>（等号形式）
+            else if (arg.startsWith("-m=")) {
+                commitMessage = arg.substring("-m=".length());
+            }
+            // 解析 -m <提交信息>（空格分隔形式，取下一个参数）
+            else if (arg.equals("-m") || arg.equals("--message")) {
+                if (i + 1 < args.length) {
+                    commitMessage = args[++i]; // 取下一个参数作为值，同时跳过它
+                }
+            }
+        }
+
+        // ---- 校验 --message 必填 ----
+        if (commitMessage == null || commitMessage.trim().isEmpty()) {
+            System.err.println(RED + "[错误] 缺少必填参数 --message 或 -m，请指定提交信息。" + RESET);
+            System.err.println(YELLOW + "  用法：java GitPushSkill --projectPath=\"<项目路径>\" --message=\"<提交信息>\"" + RESET);
+            System.err.println(YELLOW + "  示例：java GitPushSkill --projectPath=\"D:\\MyProject\" -m \"feat: 新增登录功能\"" + RESET);
+            System.exit(1);
         }
 
         // ---- 验证路径 ----
@@ -62,7 +97,7 @@ public class GitPushSkill {
 
         // ---- 执行核心流程 ----
         GitPushSkill skill = new GitPushSkill();
-        boolean success = skill.executeSkill(path.toAbsolutePath().toString());
+        boolean success = skill.executeSkill(path.toAbsolutePath().toString(), commitMessage.trim());
 
         if (success) {
             System.out.println(GREEN + "\n✅ 推送成功完成！" + RESET);
@@ -79,19 +114,20 @@ public class GitPushSkill {
     /**
      * 核心流程编排方法
      * <p>
-     * 按顺序执行六个步骤，任一步骤失败则终止并返回 false。
+     * 按顺序执行五个步骤，任一步骤失败则终止并返回 false。
      *
-     * @param projectPath 项目根目录的绝对路径
+     * @param projectPath   项目根目录的绝对路径
+     * @param commitMessage 提交信息（由 --message / -m 参数传入）
      * @return true 表示全部执行成功，false 表示中途失败
      */
-    public boolean executeSkill(String projectPath) {
+    public boolean executeSkill(String projectPath, String commitMessage) {
         System.out.println(CYAN + "========================================" + RESET);
         System.out.println(CYAN + "  GitPushSkill — 一键上传到 GitHub" + RESET);
         System.out.println(CYAN + "  项目路径：" + projectPath + RESET);
         System.out.println(CYAN + "========================================\n" + RESET);
 
         // ---- 步骤1：检测变更 ----
-        System.out.println(YELLOW + "[步骤 1/6] 检测项目变更 ..." + RESET);
+        System.out.println(YELLOW + "[步骤 1/5] 检测项目变更 ..." + RESET);
         List<String> changedFiles = getChangedFiles(projectPath);
         if (changedFiles == null) {
             System.err.println(RED + "[错误] 检测变更失败，终止执行。" + RESET);
@@ -107,37 +143,25 @@ public class GitPushSkill {
         }
         System.out.println();
 
-        // ---- 步骤2：展示变更文件列表（已在步骤1中一并输出） ----
-        // 此处直接沿用步骤1的输出结果，无需重复操作
-
-        // ---- 步骤3：暂存变更 ----
-        System.out.println(YELLOW + "[步骤 3/6] 暂存变更 (git add) ..." + RESET);
+        // ---- 步骤2：暂存变更 ----
+        System.out.println(YELLOW + "[步骤 2/5] 暂存变更 (git add) ..." + RESET);
         if (!stageChanges(projectPath)) {
             System.err.println(RED + "[错误] 暂存变更失败，终止执行。" + RESET);
             return false;
         }
         System.out.println("  ✅ 文件已暂存\n");
 
-        // ---- 步骤4：等待用户输入 commit message ----
-        System.out.println(YELLOW + "[步骤 4/6] 请输入提交备注 ..." + RESET);
-        String commitMessage = readCommitMessageFromUser();
-        if (commitMessage == null) {
-            // 用户输入读取失败（如 IO 异常）
-            System.err.println(RED + "[错误] 读取提交信息失败，终止执行。" + RESET);
-            return false;
-        }
-        System.out.println("  您输入的提交信息：" + commitMessage + "\n");
-
-        // ---- 步骤5：提交变更 ----
-        System.out.println(YELLOW + "[步骤 5/6] 提交变更 (git commit) ..." + RESET);
+        // ---- 步骤3：提交变更 ----
+        System.out.println(YELLOW + "[步骤 3/5] 提交变更 (git commit) ..." + RESET);
+        System.out.println("  提交信息：" + commitMessage);
         if (!commitChanges(projectPath, commitMessage)) {
             System.err.println(RED + "[错误] 提交变更失败，终止执行。" + RESET);
             return false;
         }
         System.out.println("  ✅ 已提交\n");
 
-        // ---- 步骤6：推送到远程（含安全确认） ----
-        System.out.println(YELLOW + "[步骤 6/6] 推送到远程仓库 (git push) ..." + RESET);
+        // ---- 步骤4：推送到远程（含安全确认） ----
+        System.out.println(YELLOW + "[步骤 4/5] 推送到远程仓库 (git push) ..." + RESET);
 
         // 推送前输出摘要供用户确认
         printPushSummary(projectPath, changedFiles, commitMessage);
@@ -147,6 +171,7 @@ public class GitPushSkill {
             return false;
         }
 
+        // ---- 步骤5：执行推送 ----
         if (!pushToRemote(projectPath)) {
             System.err.println(RED + "[错误] 推送到远程失败，终止执行。" + RESET);
             return false;
@@ -224,59 +249,7 @@ public class GitPushSkill {
     }
 
     // ============================
-    //  步骤4：等待用户输入提交备注
-    // ============================
-
-    /**
-     * 从控制台读取用户手动输入的 commit message
-     * <p>
-     * 执行流程：
-     *   1. 在控制台输出提示信息，引导用户输入提交备注
-     *   2. 使用 BufferedReader 读取用户从键盘输入的一整行文字
-     *   3. 如果用户直接按回车（输入为空），给出警告并提示重新输入
-     *   4. 循环直到用户输入非空内容为止
-     * <p>
-     * 该环节在 git add 之后、git commit 之前执行，
-     * 让用户有机会在暂存完所有变更后，根据实际变更内容撰写提交信息。
-     *
-     * @return 用户输入的非空提交信息字符串，读取失败返回 null
-     */
-    public String readCommitMessageFromUser() {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
-        String input = null;
-
-        while (true) {
-            try {
-                System.out.print("  请为本次提交输入 commit message（输入完成后按回车确认）：");
-
-                input = reader.readLine();
-
-                // 检查是否读取到 EOF（用户可能按了 Ctrl+Z 或 Ctrl+D）
-                if (input == null) {
-                    System.err.println(RED + "\n  [警告] 读取到输入流结束，终止提交。" + RESET);
-                    return null;
-                }
-
-                // 去除首尾空白后检查是否为空
-                String trimmed = input.trim();
-                if (trimmed.isEmpty()) {
-                    System.out.println(RED + "  ❌ 提交信息不能为空，请重新输入：" + RESET);
-                    // 继续循环，让用户重新输入
-                    continue;
-                }
-
-                // 输入有效，返回去除首尾空白后的内容
-                return trimmed;
-
-            } catch (IOException e) {
-                System.err.println(RED + "\n  [异常] 读取用户输入时发生 IO 错误：" + e.getMessage() + RESET);
-                return null;
-            }
-        }
-    }
-
-    // ============================
-    //  步骤3：暂存变更
+    //  步骤2：暂存变更
     // ============================
 
     /**
@@ -310,15 +283,21 @@ public class GitPushSkill {
     }
 
     // ============================
-    //  步骤5：提交变更
+    //  步骤3：提交变更（中文编码修复）
     // ============================
 
     /**
-     * 执行 git commit -m "提交信息" 提交已暂存的变更
+     * 执行 git commit 提交已暂存的变更
      * <p>
-     * 注意：提交信息中如果包含特殊字符（如引号），需要做转义处理。
-     * 这里将提交信息写入临时文件后通过 git commit -F 的方式提交，
-     * 避免命令行引号转义带来的问题。
+     * 关键编码处理：
+     *   - 将提交信息以 UTF-8 编码写入临时文件，确保中文字节正确存储
+     *   - 使用 git -c i18n.commitEncoding=UTF-8 告诉 Git 提交信息是 UTF-8 编码，
+     *     避免 Windows 系统默认代码页（GBK）导致的中文乱码
+     *   - 使用 git -c i18n.logOutputEncoding=UTF-8 确保 Git 日志输出也使用 UTF-8
+     *   - 通过 -F 从临时文件读取提交信息，避免命令行引号转义问题
+     * <p>
+     * 通过以上处理，推送到 GitHub 后的 commit message 中的中文能够正常显示，
+     * 不会出现乱码。
      *
      * @param projectPath   项目根目录路径
      * @param commitMessage 提交信息内容
@@ -332,14 +311,31 @@ public class GitPushSkill {
             tempFile = File.createTempFile("git-commit-msg-", ".txt");
             tempFile.deleteOnExit(); // JVM 退出时自动删除
 
-            // 使用 UTF-8 编码写入提交信息，确保中文正常显示
-            Files.writeString(tempFile.toPath(), commitMessage, java.nio.charset.StandardCharsets.UTF_8);
+            // ---- ★ 编码修复关键步骤1：以 UTF-8 写入临时文件 ----
+            // 使用 OutputStreamWriter 明确指定 UTF-8 编码写入文件，
+            // 确保 commit message 中的中文字节以 UTF-8 形式存储，
+            // 而不是 Windows 默认的 GBK 编码。
+            try (OutputStreamWriter writer = new OutputStreamWriter(
+                    new FileOutputStream(tempFile), StandardCharsets.UTF_8)) {
+                writer.write(commitMessage);
+                writer.flush();
+            }
 
-            System.out.println("  正在执行：git commit -F " + tempFile.getName());
+            System.out.println("  正在执行：git commit (UTF-8)");
 
-            // 通过 -F 从文件读取提交信息，避免引号转义
-            String output = runCommand(projectPath,
-                    "git commit -F \"" + tempFile.getAbsolutePath() + "\"");
+            // ---- ★ 编码修复关键步骤2：在 Git 命令中指定 UTF-8 编码 ----
+            // git -c i18n.commitEncoding=UTF-8 ：
+            //   告诉 Git 本次提交信息的编码是 UTF-8，
+            //   防止 Git 在 Windows 上误按 GBK 解码导致乱码。
+            // git -c i18n.logOutputEncoding=UTF-8 ：
+            //   确保后续 git log 等命令也以 UTF-8 输出。
+            //
+            // 组合命令示例：
+            //   git -c i18n.commitEncoding=UTF-8 -c i18n.logOutputEncoding=UTF-8 commit -F "C:\temp\xxx.txt"
+            String gitCommitCommand = "git -c i18n.commitEncoding=UTF-8 -c i18n.logOutputEncoding=UTF-8 commit -F \""
+                    + tempFile.getAbsolutePath() + "\"";
+
+            String output = runCommand(projectPath, gitCommitCommand);
 
             if (output == null) {
                 return false; // 执行异常
@@ -364,7 +360,7 @@ public class GitPushSkill {
     }
 
     // ============================
-    //  步骤6：推送到远程
+    //  步骤5：推送到远程
     // ============================
 
     /**
@@ -406,7 +402,7 @@ public class GitPushSkill {
      * 摘要包含：
      *   - 当前分支名称
      *   - 变更文件数量
-     *   - 提交信息标题
+     *   - 提交信息
      *   - 最近一次提交的详细信息（git log -1）
      *
      * @param projectPath   项目根目录路径
@@ -447,7 +443,7 @@ public class GitPushSkill {
             System.out.println("  远程仓库  : " + remoteUrl);
             System.out.println("  当前分支  : " + branch);
             System.out.println("  变更文件  : " + changedFiles.size() + " 个");
-            System.out.println("  提交信息  : " + commitMessage.split("\n")[0]);
+            System.out.println("  提交信息  : " + commitMessage);
             System.out.println("  最新提交  : " + lastCommit);
             System.out.println(CYAN + "───────────────────────────────────────" + RESET);
             System.out.println();
