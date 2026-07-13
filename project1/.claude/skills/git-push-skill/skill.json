@@ -1,25 +1,52 @@
 {
   "name": "GitPushSkill",
-  "description": "当用户说\"帮我把程序上传到远端仓库\"、\"帮我上传到github\"、\"推送代码\"、\"git push\"、\"提交代码到远端\"或\"把变更推上去\"时触发。该技能自动检测Git项目变更、暂存、等待用户输入提交备注、提交并推送到远程仓库。",
+  "description": "当用户说\"帮我把程序上传到远端仓库\"、\"帮我上传到github\"、\"推送代码\"、\"git push\"、\"提交代码到远端\"或\"把变更推上去\"时触发。该技能分两步执行：先预览变更信息展示给用户确认，再执行add→commit→push到所有远程仓库。",
   "parameters": {
     "type": "object",
     "properties": {
       "projectPath": {
         "type": "string",
-        "description": "目标Git项目根目录的绝对路径，例如 D:\\MyProject。留空则默认使用当前工作区目录。"
+        "description": "目标Git项目根目录的绝对路径，例如 D:\\MyProject。"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["preview", "execute"],
+        "description": "运行模式：preview（预览变更和远程仓库）或 execute（执行推送）。"
+      },
+      "message": {
+        "type": "string",
+        "description": "提交信息，execute 模式必填。例如：\"feat: 新增登录模块\""
       }
     },
-    "required": []
+    "required": ["projectPath", "mode"]
   },
-  "execution": {
-    "command": "java",
-    "args": [
-      "-cp",
-      "D:\\Desktop\\claudecode\\project1\\.claude\\skills\\git-push-skill",
-      "GitPushSkill",
-      "--projectPath=${workspaceFolder}"
-    ],
-    "workingDirectory": "${workspaceFolder}",
-    "description": "运行 GitPushSkill Java 程序，将当前 VSCode 工作区目录作为参数传入。程序会自动检测变更 → git add → 交互式输入提交备注 → git commit → git push。"
-  }
+  "steps": [
+    {
+      "name": "preview",
+      "description": "预览模式 - Claude 先调用此命令获取变更文件列表和远程仓库列表，展示给用户确认",
+      "command": "java",
+      "args": [
+        "-cp",
+        "C:\\Users\\45715\\.claude\\skills\\git-push-skill",
+        "GitPushSkill",
+        "--projectPath=${workspaceFolder}",
+        "--mode=preview"
+      ],
+      "workingDirectory": "${workspaceFolder}"
+    },
+    {
+      "name": "execute",
+      "description": "执行模式 - 用户确认后，Claude 调用此命令执行 add→commit→push 到所有远程仓库",
+      "command": "java",
+      "args": [
+        "-cp",
+        "C:\\Users\\45715\\.claude\\skills\\git-push-skill",
+        "GitPushSkill",
+        "--projectPath=${workspaceFolder}",
+        "--mode=execute",
+        "--message=${message}"
+      ],
+      "workingDirectory": "${workspaceFolder}"
+    }
+  ]
 }
