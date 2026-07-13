@@ -1,0 +1,25 @@
+{
+  "name": "GitPushSkill",
+  "description": "当用户说\"帮我把程序上传到远端仓库\"、\"帮我上传到github\"、\"推送代码\"、\"git push\"、\"提交代码到远端\"或\"把变更推上去\"时触发。该技能自动检测Git项目变更、暂存、等待用户输入提交备注、提交并推送到远程仓库。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "projectPath": {
+        "type": "string",
+        "description": "目标Git项目根目录的绝对路径，例如 D:\\MyProject。留空则默认使用当前工作区目录。"
+      }
+    },
+    "required": []
+  },
+  "execution": {
+    "command": "java",
+    "args": [
+      "-cp",
+      "D:\\Desktop\\claudecode\\project1\\.claude\\skills\\git-push-skill",
+      "GitPushSkill",
+      "--projectPath=${workspaceFolder}"
+    ],
+    "workingDirectory": "${workspaceFolder}",
+    "description": "运行 GitPushSkill Java 程序，将当前 VSCode 工作区目录作为参数传入。程序会自动检测变更 → git add → 交互式输入提交备注 → git commit → git push。"
+  }
+}
